@@ -2,8 +2,26 @@ import { useEffect, useRef, useState } from 'react';
 import { useMapStore } from '../store/mapStore';
 import { buildOpml, downloadFile } from '../export/opml';
 import { exportXlsx } from '../export/xlsx';
-import AllocateDialog from './AllocateDialog';
+import { exportSmmx } from '../export/smmx';
 import Logo from './Logo';
+
+const UndoIcon = ({ flip = false }: { flip?: boolean }) => (
+  <svg
+    width="15"
+    height="15"
+    viewBox="0 0 16 16"
+    fill="none"
+    style={flip ? { transform: 'scaleX(-1)' } : undefined}
+  >
+    <path
+      d="M6.7 2.8 3.2 6l3.5 3.2M3.6 6h6a3.4 3.4 0 0 1 0 6.8H7.2"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
 
 const VIEW_LABEL = { mindmap: 'Mind map', map: 'Map' } as const;
 
@@ -24,13 +42,10 @@ export default function Toolbar({ onImport }: { onImport: () => void }) {
   const sortingBranch = useMapStore((s) => s.sortingBranch);
   const attrDefs = useMapStore((s) => s.attrDefs);
   const saveState = useMapStore((s) => s.saveState);
-  const colorMode = useMapStore((s) => s.colorMode);
   const canUndo = useMapStore((s) => s.undoStack.length > 0);
   const canRedo = useMapStore((s) => s.redoStack.length > 0);
-  const selCount = useMapStore((s) => Object.keys(s.selected).length);
 
   const [exportOpen, setExportOpen] = useState(false);
-  const [allocOpen, setAllocOpen] = useState(false);
   const [addingValue, setAddingValue] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -68,37 +83,20 @@ export default function Toolbar({ onImport }: { onImport: () => void }) {
             ))}
           </div>
           <button
-            className="ghost"
+            className="ghost icon-btn"
             disabled={!canUndo}
             title="Undo (⌘Z)"
             onClick={() => st().undo()}
           >
-            ↶
+            <UndoIcon />
           </button>
           <button
-            className="ghost"
+            className="ghost icon-btn"
             disabled={!canRedo}
             title="Redo (⇧⌘Z)"
             onClick={() => st().redo()}
           >
-            ↷
-          </button>
-          {mindmapVisible && (
-            <button
-              className="ghost"
-              onClick={() => st().setColorMode(colorMode === 'status' ? 'allocation' : 'status')}
-              title="Switch node coloring between status and allocation cells"
-            >
-              ● {colorMode === 'status' ? 'Status' : 'Cells'}
-            </button>
-          )}
-          <button
-            className={selCount > 0 ? 'primary' : ''}
-            disabled={selCount === 0}
-            title="Assign layer/depth to the selected nodes (with their branches)"
-            onClick={() => setAllocOpen(true)}
-          >
-            Allocate{selCount > 0 ? ` ${selCount}` : ''}…
+            <UndoIcon flip />
           </button>
           {mindmapVisible && (
             <button
@@ -170,6 +168,15 @@ export default function Toolbar({ onImport }: { onImport: () => void }) {
                 <button
                   onClick={() => {
                     const s = useMapStore.getState();
+                    setExportOpen(false);
+                    void exportSmmx(s.nodes, s.rootIds, s.layouts, s.images, s.crossLinks, s.mapName);
+                  }}
+                >
+                  SimpleMind (.smmx)
+                </button>
+                <button
+                  onClick={() => {
+                    const s = useMapStore.getState();
                     downloadFile(
                       `${s.mapName || 'cosmos'}.opml`,
                       buildOpml(s.nodes, s.rootIds, s.mapName),
@@ -178,7 +185,7 @@ export default function Toolbar({ onImport }: { onImport: () => void }) {
                     setExportOpen(false);
                   }}
                 >
-                  OPML (for SimpleMind)
+                  OPML
                 </button>
                 <button
                   onClick={() => {
@@ -197,7 +204,6 @@ export default function Toolbar({ onImport }: { onImport: () => void }) {
       <button className={mapId ? '' : 'primary'} onClick={onImport}>
         Import
       </button>
-      {allocOpen && <AllocateDialog onClose={() => setAllocOpen(false)} />}
     </div>
   );
 }

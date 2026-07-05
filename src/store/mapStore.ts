@@ -68,7 +68,13 @@ export interface MapState {
 
   // node edits (every view goes through these — that's the sync)
   setAttr: (ids: string[], name: string, value: string | number | null) => void;
-  allocate: (ids: string[], patch: { layer?: string | null; depth?: number | null }) => void;
+  allocate: (
+    ids: string[],
+    patch: { layer?: string | null; depth?: number | null; noalloc?: boolean | null },
+  ) => void;
+  moveLayer: (value: string, dir: -1 | 1) => void;
+  /** swap depth columns pos and pos+1 within one layer (contents move) */
+  swapLayerDepths: (layer: string, pos: number) => void;
   setLabel: (id: string, label: string) => void;
   setNotes: (id: string, notes: string) => void;
   setPositions: (moves: { id: string; x: number; y: number }[], commit: boolean) => void;
@@ -347,21 +353,37 @@ export const useMapStore = create<MapState>()((set, get) => {
     return old;
   };
 
+  type AllocEntry = {
+    id: string;
+    layer?: string | null;
+    depth?: number | null;
+    noalloc?: boolean | null;
+  };
+
   /** Set several attributes at once per node; returns previous values. */
-  const applyAllocEntries = (
-    entries: { id: string; layer?: string | null; depth?: number | null }[],
-  ): { id: string; layer?: string | null; depth?: number | null }[] => {
+  const applyAllocEntries = (entries: AllocEntry[]): AllocEntry[] => {
     const { nodes, mapId } = get();
     if (!mapId) return [];
     const next = { ...nodes };
-    const old: { id: string; layer?: string | null; depth?: number | null }[] = [];
+    const old: AllocEntry[] = [];
     let changed = false;
     for (const e of entries) {
       const n = next[e.id];
       if (!n) continue;
       const attrs = { ...n.attrs };
-      const prev: { id: string; layer?: string | null; depth?: number | null } = { id: e.id };
+      const prev: AllocEntry = { id: e.id };
       let touched = false;
+      // the "not needed" bin flag (internal, not history-logged)
+      if (e.noalloc !== undefined) {
+        const cur = attrs._noalloc === 1;
+        const want = e.noalloc === true;
+        if (cur !== want) {
+          prev.noalloc = cur;
+          if (want) attrs._noalloc = 1;
+          else delete attrs._noalloc;
+          touched = true;
+        }
+      }
       for (const k of ['layer', 'depth'] as const) {
         if (e[k] === undefined) continue;
         const value = e[k];
@@ -941,7 +963,12 @@ export const useMapStore = create<MapState>()((set, get) => {
       const { nodes } = get();
       const all = new Set<string>();
       for (const id of ids) for (const s of subtreeIds(nodes, id)) all.add(s);
-      const forward = [...all].map((id) => ({ id, ...patch }));
+      let affected = [...all];
+      if (patch.noalloc === true) {
+        // parking in the bin only takes the UNALLOCATED part of the branch
+        affected = affected.filter((id) => allocationState(nodes[id]) === 'none');
+      }
+      const forward = affected.map((id) => ({ id, ...patch }));
       const old = applyAllocEntries(forward);
       if (old.length === 0) return;
       pushUndo({
@@ -1202,6 +1229,35 @@ export const useMapStore = create<MapState>()((set, get) => {
           }),
       });
       return true;
+    },
+
+    moveLayer: (value, dir) => {
+      const def = get().attrDefs.find((d) => d.name === 'layer');
+      if (!def) return;
+      const opts = [...def.options];
+      const i = opts.findIndex((o) => o.value === value);
+      const j = i + dir;
+      if (i < 0 || j < 0 || j >= opts.length) return;
+      [opts[i], opts[j]] = [opts[j], opts[i]];
+      get().setLayerOptions(opts);
+    },
+
+    swapLayerDepths: (layer, pos) => {
+      const entries: [string, string | number | null][] = [];
+      for (const n of Object.values(get().nodes)) {
+        if (n.attrs.layer !== layer) continue;
+        const v = Number(n.attrs.depth);
+        if (v === pos) entries.push([n.id, pos + 1]);
+        else if (v === pos + 1) entries.push([n.id, pos]);
+      }
+      if (entries.length === 0) return;
+      const old = applyAttrEntries('depth', entries);
+      pushUndo({
+        label: 'Swap depths',
+        key: null,
+        undo: () => runRestoring(() => applyAttrEntries('depth', old)),
+        redo: () => runRestoring(() => applyAttrEntries('depth', entries)),
+      });
     },
 
     reparent: (childId, newParentId) => {

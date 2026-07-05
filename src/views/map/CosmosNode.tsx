@@ -4,8 +4,10 @@ import { useMapStore } from '../../store/mapStore';
 
 export interface CosmosNodeData {
   label: string;
-  border: string | null; // status/cell color — null = default dark border
-  halo: string | null; // soft ring in the status/cell tint (fill stays white)
+  border: string | null; // status color — null = default dark border
+  halo: string | null; // soft status ring
+  fill: string | null; // allocation cell color (the node wears its cell)
+  stripe: string | null; // original SimpleMind color, kept as a left mark
   hasNotes: boolean;
   hasParent: boolean;
   link: string | null;
@@ -66,8 +68,8 @@ function CosmosNodeInner({ id, data, selected }: NodeProps<CosmosFlowNode>) {
     setEditing(false);
   };
 
-  // color lives in the border and a soft halo — the fill stays white so
-  // imported SimpleMind colors are never confused with Cosmos meaning
+  // fill = allocation cell · left stripe = original SimpleMind color ·
+  // border + halo = status. Three signals, no confusion.
   const shadows: string[] = [];
   if (data.halo) shadows.push(`0 0 0 4px ${data.halo}`);
   if (selected) shadows.push(`0 0 0 ${data.halo ? 6.5 : 2.5}px rgba(28, 30, 33, 0.4)`);
@@ -77,6 +79,7 @@ function CosmosNodeInner({ id, data, selected }: NodeProps<CosmosFlowNode>) {
       className={`cosmos-node${data.isLabel ? ' label-node' : ''}`}
       style={{
         borderColor: data.border ?? undefined,
+        background: data.fill ?? undefined,
         boxShadow: shadows.length > 0 ? shadows.join(', ') : undefined,
       }}
       onDoubleClick={(e) => {
@@ -84,6 +87,7 @@ function CosmosNodeInner({ id, data, selected }: NodeProps<CosmosFlowNode>) {
         setEditing(true);
       }}
     >
+      {data.stripe && <span className="smmx-stripe" style={{ background: data.stripe }} />}
       <Handle type="target" position={Position.Left} id="tl" className="invisible-handle" />
       {/* source handles double as grab points for drawing cross-links */}
       <Handle type="source" position={Position.Right} id="sr" className="conn-handle" />

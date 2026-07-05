@@ -11,7 +11,7 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { allocationState, subtreeIds, useMapStore, visibleIds } from '../../store/mapStore';
-import { cellColor, tint } from '../../lib/colors';
+import { cellColor } from '../../lib/colors';
 import { optionColor } from '../../lib/attrs';
 import { imageUrl } from '../../lib/supabase';
 import { tidyLayout, type Size } from '../../lib/layout';
@@ -19,9 +19,6 @@ import { STATUS_FILLS, type StatusValue, type XY } from '../../types';
 import { CosmosNode, type CosmosFlowNode } from './CosmosNode';
 
 const nodeTypes = { cosmos: CosmosNode };
-
-/** Below this zoom the detail view hands off to the galaxy overview. */
-export const EXIT_DETAIL_ZOOM = 0.17;
 
 export interface DropTarget {
   kind: 'sort' | 'cell';
@@ -62,7 +59,6 @@ function Flow({ dropApi }: Props) {
   const attrDefs = useMapStore((s) => s.attrDefs);
   const crossLinks = useMapStore((s) => s.crossLinks);
   const sorting = useMapStore((s) => s.sorting);
-  const colorMode = useMapStore((s) => s.colorMode);
   const focusNodeId = useMapStore((s) => s.focusNodeId);
 
   const statusDef = useMemo(() => attrDefs.find((d) => d.name === 'status'), [attrDefs]);
@@ -132,9 +128,11 @@ function Flow({ dropApi }: Props) {
     if (hold && Date.now() >= hold.until) focusHold.current = null;
     if (hold && pos[hold.id] && Date.now() < hold.until) {
       const s = sizeOf(hold.id);
-      // instant: an animated center races the measure→relayout settle
+      const cur = rf.getViewport().zoom;
+      // instant: an animated center races the measure→relayout settle.
+      // keep the user's zoom unless they're too far out to read anything
       void rf.setCenter(pos[hold.id].x + s.w / 2, pos[hold.id].y + s.h / 2, {
-        zoom: Math.min(Math.max(rf.getViewport().zoom, 0.8), 1.15),
+        zoom: cur >= 0.4 ? Math.min(cur, 2) : 0.8,
         duration: 0,
       });
       fittedRef.current = true;
@@ -149,29 +147,29 @@ function Flow({ dropApi }: Props) {
   const [rfNodes, setRfNodes] = useState<CosmosFlowNode[]>([]);
   // edge selection lives here (edges are derived, so RF can't own it)
   const [edgeSel, setEdgeSel] = useState<Set<string>>(new Set());
+  // "holding label +N" chip while dragging a branch
+  const [dragGhost, setDragGhost] = useState<{ x: number; y: number; label: string; count: number } | null>(null);
 
   useEffect(() => {
     setRfNodes((prev) => {
       const prevMap = new Map(prev.map((n) => [n.id, n]));
       return visible.map((id) => {
         const n = nodes[id];
-        let border: string | null = null;
-        let halo: string | null = null;
-        if (colorMode === 'allocation') {
-          const a = allocationState(n);
-          if (a !== 'none') {
-            const layerColor = optionColor(layerDef, n.attrs.layer);
-            border = tint(layerColor, 0.9);
-            halo = cellColor(
-              layerColor,
-              a === 'xy' ? Number(n.attrs.depth) : null,
-              depthMax,
-            );
-          }
-        } else {
-          const status = n.attrs.status as StatusValue | undefined;
-          border = status ? optionColor(statusDef, status) : null;
-          halo = status ? (STATUS_FILLS[status] ?? null) : null;
+        // status → border + halo
+        const status = n.attrs.status as StatusValue | undefined;
+        const border = status ? optionColor(statusDef, status) : null;
+        const halo = status ? (STATUS_FILLS[status] ?? null) : null;
+        // allocation cell → fill (the node wears the cell it was dropped into)
+        const a = allocationState(n);
+        let fill: string | null = null;
+        if (a !== 'none') {
+          fill = cellColor(
+            optionColor(layerDef, n.attrs.layer),
+            a === 'xy' ? Number(n.attrs.depth) : null,
+            depthMax,
+          );
+        } else if (n.attrs._noalloc) {
+          fill = '#eceef0'; // parked in the "not needed" bin
         }
         const old = prevMap.get(id);
         const node: CosmosFlowNode = {
@@ -183,6 +181,8 @@ function Flow({ dropApi }: Props) {
             label: n.label,
             border,
             halo,
+            fill,
+            stripe: (n.attrs._smmx_fill as string) || null,
             hasNotes: n.notes.trim().length > 0,
             hasParent: n.parentId != null,
             link: (n.attrs.link as string) || null,
@@ -200,7 +200,7 @@ function Flow({ dropApi }: Props) {
         return node;
       });
     });
-  }, [visible, nodes, layouts, selected, images, statusDef, layerDef, depthMax, expanded, descCounts, colorMode]);
+  }, [visible, nodes, layouts, selected, images, statusDef, layerDef, depthMax, expanded, descCounts]);
 
   const rfEdges = useMemo(() => {
     const vis = new Set(visible);
@@ -256,14 +256,17 @@ function Flow({ dropApi }: Props) {
     }
     const st = useMapStore.getState();
 
-    const moves: { id: string; x: number; y: number }[] = [];
-    for (const c of changes) {
-      if (c.type === 'position' && c.position) {
-        moves.push({ id: c.id, x: c.position.x, y: c.position.y });
+    // non-root drags never move the node — a ghost chip follows the pointer
+    // instead (no snap-back shake); only tree heads move for real
+    if (!dragAnchor.current || dragAnchor.current.isRoot) {
+      const moves: { id: string; x: number; y: number }[] = [];
+      for (const c of changes) {
+        if (c.type === 'position' && c.position) {
+          moves.push({ id: c.id, x: c.position.x, y: c.position.y });
+        }
       }
+      if (moves.length > 0) st.setPositions(moves, false);
     }
-    // live ghosting only — every drag snaps back on drop
-    if (moves.length > 0) st.setPositions(moves, false);
 
     const selChanges = changes.filter((c) => c.type === 'select');
     if (selChanges.length > 0) {
@@ -323,6 +326,7 @@ function Flow({ dropApi }: Props) {
   };
 
   return (
+    <>
     <ReactFlow
       nodes={rfNodes}
       edges={rfEdges}
@@ -353,8 +357,18 @@ function Flow({ dropApi }: Props) {
         const target = dropApi ? dropApi.hitAndHot(pt) : null;
         // dropping onto another node reparents (not in sorting mode)
         armNode(!target && !sorting ? nodeUnderPoint(pt) : null);
-        // moving the head moves the whole map, live
         const anchor = dragAnchor.current;
+        // ghost chip: you're holding the node and everything under it
+        if (anchor && !anchor.isRoot && pt) {
+          const st = useMapStore.getState();
+          setDragGhost({
+            x: pt.x,
+            y: pt.y,
+            label: (st.nodes[node.id]?.label ?? '').replace(/\n/g, ' '),
+            count: subtreeIds(st.nodes, node.id).length,
+          });
+        }
+        // moving the head moves the whole map, live
         if (anchor?.isRoot && anchor.id === node.id && dragOrigin.current.size > 1) {
           const dx = node.position.x - anchor.start.x;
           const dy = node.position.y - anchor.start.y;
@@ -374,19 +388,22 @@ function Flow({ dropApi }: Props) {
         dropApi?.hitAndHot(null);
         const nodeTarget = !target && !sorting ? nodeUnderPoint(pt) : null;
         armNode(null);
+        setDragGhost(null);
         const anchor = dragAnchor.current;
         dragAnchor.current = null;
 
-        if (!target && !nodeTarget && anchor?.isRoot && anchor.id === node.id) {
-          // whole tree already followed live — just commit the new anchor
-          const to = st.layouts[node.id] ?? anchor.start;
-          st.commitPositions([{ id: node.id, from: anchor.start, to }]);
-          return;
+        if (anchor?.isRoot && anchor.id === node.id) {
+          if (!target && !nodeTarget) {
+            // whole tree already followed live — just commit the new anchor
+            const to = st.layouts[node.id] ?? anchor.start;
+            st.commitPositions([{ id: node.id, from: anchor.start, to }]);
+            return;
+          }
+          // root dropped ON something: put the tree back first
+          const restore = [...dragOrigin.current.entries()].map(([id, p]) => ({ id, ...p }));
+          if (restore.length > 0) st.setPositions(restore, false);
         }
-
-        // otherwise the layout owns positions: snap everything back
-        const restore = [...dragOrigin.current.entries()].map(([id, p]) => ({ id, ...p }));
-        if (restore.length > 0) st.setPositions(restore, false);
+        // non-root drags never moved anything — nothing to snap back
         if (target) dropApi?.drop(target, node.id);
         else if (nodeTarget) st.reparent(node.id, nodeTarget);
       }}
@@ -418,21 +435,15 @@ function Flow({ dropApi }: Props) {
         // only a real user gesture cancels auto-centering
         if (e) focusHold.current = null;
       }}
-      onMoveEnd={(e, vp: Viewport) => {
+      onMoveEnd={(_e, vp: Viewport) => {
         // viewport is written to the store only when a move ENDS — writing
-        // per-frame created a feedback loop that made scrolling jump
-        const st = useMapStore.getState();
-        if (e && vp.zoom < EXIT_DETAIL_ZOOM && !st.overview) {
-          // galaxy lives in its own coordinate space: fit it fresh
-          st.setViewport(null);
-          st.setOverview(true);
-          return;
-        }
-        st.setViewport(vp);
+        // per-frame created a feedback loop that made scrolling jump.
+        // No automatic galaxy flip: zooming never changes the view by itself.
+        useMapStore.getState().setViewport(vp);
       }}
       defaultViewport={useMapStore.getState().viewport ?? undefined}
       fitViewOptions={{ padding: 0.15, maxZoom: 1 }}
-      minZoom={0.12}
+      minZoom={0.02}
       maxZoom={2.25}
       panOnScroll
       zoomOnScroll={false}
@@ -443,6 +454,10 @@ function Flow({ dropApi }: Props) {
       multiSelectionKeyCode={['Meta', 'Control']}
       deleteKeyCode={sorting ? null : ['Backspace', 'Delete']}
       nodesConnectable
+      // native focus scrolls even overflow:hidden containers — that was the
+      // "view shifts to the top after dropping on the dock" bug
+      nodesFocusable={false}
+      edgesFocusable={false}
       connectionRadius={32}
       onConnect={(c) => {
         if (c.source && c.target) useMapStore.getState().addCrossLink(c.source, c.target);
@@ -454,5 +469,12 @@ function Flow({ dropApi }: Props) {
       proOptions={{ hideAttribution: false }}
       onPaneClick={() => useMapStore.getState().setSelected([])}
     />
+    {dragGhost && (
+      <div className="drag-ghost" style={{ left: dragGhost.x + 12, top: dragGhost.y + 10 }}>
+        {dragGhost.label}
+        {dragGhost.count > 1 ? ` +${dragGhost.count - 1}` : ''}
+      </div>
+    )}
+    </>
   );
 }

@@ -10,7 +10,7 @@ function escAttr(s: string): string {
 }
 
 /** First note line carrying attrs through SimpleMind and back. */
-function bakeLine(n: NodeData): string {
+export function bakeLine(n: NodeData): string {
   const pairs = Object.entries(n.attrs)
     .filter(([k, v]) => !k.startsWith('_') && v != null && v !== '')
     .map(([k, v]) => `${k}=${v}`);

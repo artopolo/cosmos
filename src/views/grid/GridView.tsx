@@ -4,8 +4,9 @@ import { optionColor, patchOfCellKey } from '../../lib/attrs';
 import { cellColor, tint, LAYER_PALETTE } from '../../lib/colors';
 import type { NodeData } from '../../types';
 
-/** cell key: `${layer}|${depth}` with '' for unset */
-const cellOf = (n: NodeData) => `${(n.attrs.layer as string) ?? ''}|${n.attrs.depth ?? ''}`;
+/** cell key: `${layer}|${depth}` ('' = unset); '!' = the "not needed" bin */
+const cellOf = (n: NodeData) =>
+  n.attrs._noalloc ? '!' : `${(n.attrs.layer as string) ?? ''}|${n.attrs.depth ?? ''}`;
 
 interface DragState {
   ids: string[];
@@ -194,6 +195,7 @@ export default function GridView() {
             title={`${n.label.replace(/\n/g, ' ')} · drag to another cell · double-click to locate`}
             onPointerDown={(e) => {
               if (e.button !== 0) return;
+              if ((e.target as HTMLElement).closest('.mt-open')) return;
               e.preventDefault();
               downAt.current = {
                 x: e.clientX,
@@ -208,6 +210,16 @@ export default function GridView() {
             <span className="dot" style={{ background: optionColor(statusDef, n.attrs.status) }} />
             <span className="mt-label">{n.label.replace(/\n/g, ' ') || '…'}</span>
             {hidden > 0 && <span className="alloc-count">{hidden}</span>}
+            <button
+              className="mt-open"
+              title="Notes, photos & attributes"
+              onClick={(e) => {
+                e.stopPropagation();
+                useMapStore.getState().setEditingNode(id);
+              }}
+            >
+              ≡
+            </button>
           </span>
         </div>,
       );
@@ -218,8 +230,24 @@ export default function GridView() {
 
     return (
       <div key={regionRoot} className="mini-tree">
-        <div className="mt-info" title="shown / total nodes in this cell">
-          {shown}/{total}
+        <div className="mt-tools">
+          <button
+            className="mt-arrow"
+            title="Open the whole tree (⌘→)"
+            onClick={() => useMapStore.getState().gridOpenUnder([regionRoot], true)}
+          >
+            ⊞
+          </button>
+          <button
+            className="mt-arrow"
+            title="Close the whole tree (⌘←)"
+            onClick={() => useMapStore.getState().gridOpenUnder([regionRoot], false)}
+          >
+            ⊟
+          </button>
+          <span className="mt-info" title="shown / total nodes in this cell">
+            {shown}/{total}
+          </span>
         </div>
         {rows}
         {skipped > 0 && (
@@ -319,6 +347,23 @@ export default function GridView() {
           <div className="menu layer-menu">
             {m.mode === 'menu' && (
               <>
+                <button
+                  onClick={() => {
+                    useMapStore.getState().moveLayer(value, -1);
+                    setMenu(null);
+                  }}
+                >
+                  ↑ Move up
+                </button>
+                <button
+                  onClick={() => {
+                    useMapStore.getState().moveLayer(value, 1);
+                    setMenu(null);
+                  }}
+                >
+                  ↓ Move down
+                </button>
+                <div className="menu-sep" />
                 <button onClick={() => setMenu({ layer: value, mode: 'rename' })}>Rename</button>
                 <button onClick={() => setMenu({ layer: value, mode: 'insert-above' })}>
                   Insert layer above
@@ -400,78 +445,150 @@ export default function GridView() {
     >
       <div className="grid-hint">
         Live trees: ▶ opens branches (⌘←/⌘→ on a selection, ⌘↑/⌘↓ reorders) · drag any part into a
-        cell · click selects{selCount > 0 ? ` (${selCount})` : ''}, ⌘/⇧-click adds · double-click
-        locates in the mind map
+        cell or the allocator · click selects{selCount > 0 ? ` (${selCount})` : ''}, ⌘/⇧-click adds
+        · double-click locates in the mind map
       </div>
 
-      <section className="grid-section">
-        <h3>Unallocated</h3>
-        <div className={`cell tray${hot('|')}`} data-cell="|">
-          {cellContent('|')}
-        </div>
-      </section>
+      {/* ---- section 1: what's waiting + where to drop it ---- */}
+      <div className="alloc-section">
+        <section className="grid-section">
+          <h3>Unallocated</h3>
+          <div className={`cell tray${hot('|')}`} data-cell="|">
+            {cellContent('|')}
+          </div>
+        </section>
+        <section className="grid-section">
+          <h3>Drop to allocate</h3>
+          <div className="grid-dock">
+            {layers.map((l) => {
+              const cols = layerDepthCount(attrDefs, nodes, l);
+              const color = layerColor(l);
+              return (
+                <div key={l} className="dock-layer">
+                  <div
+                    className={`dock-chip dock-layer-chip${hot(`${l}|`) ? ' hot' : ''}`}
+                    data-cell={`${l}|`}
+                    style={{ background: tint(color, 0.16), borderColor: color }}
+                  >
+                    {l}
+                  </div>
+                  <div className="dock-cells">
+                    {Array.from({ length: cols }, (_, i) => i + 1).map((d) => (
+                      <div
+                        key={d}
+                        className={`dock-chip dock-cell${hot(`${l}|${d}`) ? ' hot' : ''}`}
+                        data-cell={`${l}|${d}`}
+                        title={`${l} · depth ${d}`}
+                        style={{ background: cellColor(color, d, cols), borderColor: color }}
+                      >
+                        {d}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+            <div className={`dock-chip dock-clear${hot('!') ? ' hot' : ''}`} data-cell="!">
+              ∅ not needed
+            </div>
+          </div>
+        </section>
+      </div>
 
+      {/* ---- section 2: the big map ---- */}
       <section className="grid-section">
-        <h3>Layers × depth (1 = shallow, deeper to the right — each layer has its own depths)</h3>
+        <h3>Layers × depth (1 = shallow, deeper right)</h3>
         <div className="layer-table">
           {layers.map((l) => {
             const cols = layerDepthCount(attrDefs, nodes, l);
             return (
-              <div key={l} className="layer-row depth-row">
-                {layerHeader(l)}
-                <div className="depth-cells">
-                  <div
-                    className={`cell no-depth${hot(`${l}|`)}`}
-                    data-cell={`${l}|`}
-                    title={`${l} — no depth yet`}
-                    style={{ background: tint(layerColor(l), 0.07) }}
-                  >
-                    <span className="cell-num">—</span>
-                    {cellContent(`${l}|`)}
-                  </div>
-                  {Array.from({ length: cols }, (_, i) => i + 1).map((d) => {
-                    const key = `${l}|${d}`;
-                    return (
-                      <div
-                        key={key}
-                        className={`cell${hot(key)}`}
-                        data-cell={key}
-                        style={{ background: tint(cellColor(layerColor(l), d, cols), 0.35) }}
-                      >
-                        <span className="cell-num">
+              <div key={l} className="depth-cells">
+                {/* layer label + controls live inside the first ("—") cell */}
+                <div
+                  className={`cell no-depth${hot(`${l}|`)}`}
+                  data-cell={`${l}|`}
+                  title={`${l} — has the layer, waiting for a depth`}
+                  style={{ background: tint(layerColor(l), 0.07) }}
+                >
+                  <div className="cell-layer-head">{layerHeader(l)}</div>
+                  {cellContent(`${l}|`)}
+                </div>
+                {Array.from({ length: cols }, (_, i) => i + 1).map((d) => {
+                  const key = `${l}|${d}`;
+                  return (
+                    <div
+                      key={key}
+                      className={`cell${hot(key)}`}
+                      data-cell={key}
+                      style={{ background: tint(cellColor(layerColor(l), d, cols), 0.35) }}
+                    >
+                      <span className="cell-num">
+                        <button
+                          className="ghost micro"
+                          title={`Insert an empty depth before ${d} in “${l}” (its ${d}+ shifts right)`}
+                          onClick={() => st().insertLayerDepth(l, d)}
+                        >
+                          +
+                        </button>
+                        {d > 1 && (
                           <button
                             className="ghost micro"
-                            title={`Insert an empty depth before ${d} in “${l}” (its ${d}+ shifts right)`}
-                            onClick={() => st().insertLayerDepth(l, d)}
+                            title={`Swap with depth ${d - 1} (contents move)`}
+                            onClick={() => st().swapLayerDepths(l, d - 1)}
                           >
-                            +
+                            ‹
                           </button>
-                          {d}
-                          {cellEmpty(key) && cols > 1 && (
-                            <button
-                              className="ghost micro"
-                              title="Remove this empty depth"
-                              onClick={() => st().removeLayerDepth(l, d)}
-                            >
-                              ×
-                            </button>
-                          )}
-                        </span>
-                        {cellContent(key)}
-                      </div>
-                    );
-                  })}
-                  <button
-                    className="ghost add-depth"
-                    title={`Add a depth column to “${l}”`}
-                    onClick={() => st().insertLayerDepth(l, cols + 1)}
-                  >
-                    +
-                  </button>
-                </div>
+                        )}
+                        {d}
+                        {d < cols && (
+                          <button
+                            className="ghost micro"
+                            title={`Swap with depth ${d + 1} (contents move)`}
+                            onClick={() => st().swapLayerDepths(l, d)}
+                          >
+                            ›
+                          </button>
+                        )}
+                        {cellEmpty(key) && cols > 1 && (
+                          <button
+                            className="ghost micro"
+                            title="Remove this empty depth"
+                            onClick={() => st().removeLayerDepth(l, d)}
+                          >
+                            ×
+                          </button>
+                        )}
+                      </span>
+                      {cellContent(key)}
+                    </div>
+                  );
+                })}
+                <button
+                  className="ghost add-depth"
+                  title={`Add a depth column to “${l}”`}
+                  onClick={() => st().insertLayerDepth(l, cols + 1)}
+                >
+                  +
+                </button>
               </div>
             );
           })}
+
+          {/* "not needed" is the lowest layer of the map */}
+          <div className="depth-cells">
+            <div
+              className={`cell skip-tray${hot('!')}`}
+              data-cell="!"
+              style={{ flex: 1 }}
+              title="Parked here — never asks for allocation. Already-allocated parts of a dropped branch keep their cells."
+            >
+              <div className="cell-layer-head">
+                <span className="layer-name layer-chip skip-chip">∅ not needed</span>
+              </div>
+              {cellContent('!')}
+            </div>
+          </div>
+
           {addingLayer ? (
             <div className="add-layer-input">{nameInput('new layer name…', layerOps.add)}</div>
           ) : (

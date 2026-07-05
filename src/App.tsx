@@ -90,9 +90,10 @@ function MainApp() {
       }
     };
 
-    // Tab = child, Enter = sibling — SimpleMind-style creation on a selection
+    // Tab = child, Enter = sibling, plain arrows = jump between nodes
     const onCreateKey = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey || (e.key !== 'Tab' && e.key !== 'Enter')) return;
+      const isArrow = e.key.startsWith('Arrow');
+      if (e.metaKey || e.ctrlKey || e.altKey || (e.key !== 'Tab' && e.key !== 'Enter' && !isArrow)) return;
       const t = e.target as HTMLElement | null;
       if (
         t &&
@@ -108,6 +109,31 @@ function MainApp() {
       if (!st.mapId || st.view !== 'mindmap' || st.overview) return;
       const ids = Object.keys(st.selected);
       if (ids.length !== 1) return;
+
+      if (isArrow) {
+        const n = st.nodes[ids[0]];
+        if (!n) return;
+        let next: string | undefined;
+        if (e.key === 'ArrowLeft') {
+          next = n.parentId ?? undefined;
+        } else if (e.key === 'ArrowRight') {
+          if (n.childIds.length > 0) {
+            if (!st.expanded[n.id]) st.toggleExpanded(n.id); // reveal, then enter
+            next = n.childIds[0];
+          }
+        } else {
+          const siblings = n.parentId ? st.nodes[n.parentId].childIds : st.rootIds;
+          const i = siblings.indexOf(n.id);
+          const j = i + (e.key === 'ArrowDown' ? 1 : -1);
+          if (j >= 0 && j < siblings.length) next = siblings[j];
+        }
+        if (next) {
+          e.preventDefault();
+          st.setSelected([next]);
+          st.setFocusNode(next);
+        }
+        return;
+      }
       e.preventDefault();
       let newId = '';
       if (e.key === 'Tab') {

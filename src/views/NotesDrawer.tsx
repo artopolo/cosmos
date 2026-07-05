@@ -113,7 +113,13 @@ export default function NotesDrawer() {
         </div>
         {(images ?? []).map((im) => (
           <div key={im.id} className="drawer-img">
-            <img src={imageUrl(im.storagePath)} alt="" />
+            <img
+              src={imageUrl(im.storagePath)}
+              alt=""
+              title="Double-click to open full size"
+              style={{ cursor: 'zoom-in' }}
+              onDoubleClick={() => window.open(imageUrl(im.storagePath), '_blank')}
+            />
             <button
               className="ghost mini img-del"
               title="Delete image"

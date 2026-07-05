@@ -5,9 +5,6 @@ import { cellColor } from '../../lib/colors';
 import { fullLayout } from '../../lib/layout';
 import { UNSET_DOT, type Viewport } from '../../types';
 
-/** Zooming past this hands off to the React Flow detail view. */
-export const ENTER_DETAIL_ZOOM = 0.3;
-
 const DOT_SCREEN_PX = 3.1;
 
 interface GestureEventLike extends UIEvent {
@@ -23,35 +20,30 @@ export default function OverviewCanvas() {
   const rootIds = useMapStore((s) => s.rootIds);
   const attrDefs = useMapStore((s) => s.attrDefs);
   const selected = useMapStore((s) => s.selected);
-  const colorMode = useMapStore((s) => s.colorMode);
 
   const [tooltip, setTooltip] = useState<{ x: number; y: number; label: string } | null>(null);
 
-  const statusDef = useMemo(() => attrDefs.find((d) => d.name === 'status'), [attrDefs]);
   const layerDef = useMemo(() => attrDefs.find((d) => d.name === 'layer'), [attrDefs]);
   const depthMax = useMemo(() => depthColumnCount(attrDefs, nodes), [attrDefs, nodes]);
 
   // the galaxy has its own stable coordinate space: the fully-expanded tree
   const layouts = useMemo(() => fullLayout(nodes, rootIds), [nodes, rootIds]);
 
+  // dots wear the same cell colors as the Map view
   const dots = useMemo(() => {
     return Object.values(nodes).map((n) => {
       const p = layouts[n.id] ?? { x: 0, y: 0 };
-      let color: string;
-      if (colorMode === 'allocation') {
-        const a = allocationState(n);
-        color =
-          a === 'none'
-            ? UNSET_DOT
-            : cellColor(
-                optionColor(layerDef, n.attrs.layer),
-                a === 'xy' ? Number(n.attrs.depth) : null,
-                depthMax,
-              );
-      } else {
-        const status = n.attrs.status;
-        color = status ? optionColor(statusDef, status) : UNSET_DOT;
-      }
+      const a = allocationState(n);
+      const color =
+        a !== 'none'
+          ? cellColor(
+              optionColor(layerDef, n.attrs.layer),
+              a === 'xy' ? Number(n.attrs.depth) : null,
+              depthMax,
+            )
+          : n.attrs._noalloc
+            ? '#dfe2e5'
+            : UNSET_DOT;
       return {
         id: n.id,
         x: p.x,
@@ -60,7 +52,20 @@ export default function OverviewCanvas() {
         label: n.label.replace(/\n/g, ' '),
       };
     });
-  }, [nodes, layouts, statusDef, layerDef, depthMax, colorMode]);
+  }, [nodes, layouts, layerDef, depthMax]);
+
+  // head-node names drawn next to their dots
+  const rootLabels = useMemo(
+    () =>
+      rootIds
+        .filter((r) => nodes[r] && !nodes[r].attrs._label)
+        .map((r) => ({
+          x: layouts[r]?.x ?? 0,
+          y: layouts[r]?.y ?? 0,
+          text: nodes[r].label.replace(/\n/g, ' ').slice(0, 48),
+        })),
+    [rootIds, nodes, layouts],
+  );
 
   const lines = useMemo(() => {
     const out: number[] = []; // x1,y1,x2,y2 quads
@@ -84,8 +89,10 @@ export default function OverviewCanvas() {
     return groups;
   }, [dots]);
 
-  // viewport lives in a ref so pan/zoom never re-renders React
-  const vpRef = useRef<Viewport | null>(useMapStore.getState().viewport);
+  // viewport lives in a ref so pan/zoom never re-renders React.
+  // starts null: the galaxy always fits the whole map when it appears —
+  // a stale camera here used to show a blank white screen
+  const vpRef = useRef<Viewport | null>(null);
   const rafRef = useRef(0);
   const divingRef = useRef(false);
 
@@ -107,7 +114,7 @@ export default function OverviewCanvas() {
       }
       const bw = Math.max(maxX - minX, 1);
       const bh = Math.max(maxY - minY, 1);
-      const zoom = Math.min(Math.min(w / bw, h / bh) * 0.88, ENTER_DETAIL_ZOOM * 0.85);
+      const zoom = Math.min(w / bw, h / bh) * 0.88;
       return {
         x: w / 2 - ((minX + maxX) / 2) * zoom,
         y: h / 2 - ((minY + maxY) / 2) * zoom,
@@ -154,6 +161,15 @@ export default function OverviewCanvas() {
         ctx.fillStyle = color;
         ctx.fill();
       }
+
+      // head-node names (constant screen size)
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.font = '600 12.5px -apple-system, BlinkMacSystemFont, sans-serif';
+      ctx.fillStyle = '#1c1e21';
+      for (const rl of rootLabels) {
+        ctx.fillText(rl.text, rl.x * vp.zoom + vp.x + 9, rl.y * vp.zoom + vp.y - 7);
+      }
+      ctx.setTransform(vp.zoom * dpr, 0, 0, vp.zoom * dpr, vp.x * dpr, vp.y * dpr);
 
       // selection rings
       const selIds = Object.keys(selected);
@@ -212,27 +228,16 @@ export default function OverviewCanvas() {
       st.setOverview(false);
     };
 
-    /** crossing the zoom threshold dives into whatever branch is at center */
-    const maybeEnterDetail = () => {
-      const vp = vpRef.current!;
-      if (vp.zoom < ENTER_DETAIL_ZOOM || divingRef.current) return;
-      const w = canvas.clientWidth;
-      const h = canvas.clientHeight;
-      const center = nearestDot(w / 2, h / 2, Math.max(w, h));
-      if (!center) return;
-      dive(center.id);
-    };
 
     const zoomAt = (sx: number, sy: number, factor: number) => {
       if (!vpRef.current) return;
       const vp = vpRef.current;
-      const zoom = Math.min(Math.max(vp.zoom * factor, 0.012), 0.5);
+      const zoom = Math.min(Math.max(vp.zoom * factor, 0.008), 1.4);
       const wx = (sx - vp.x) / vp.zoom;
       const wy = (sy - vp.y) / vp.zoom;
       vpRef.current = { zoom, x: sx - wx * zoom, y: sy - wy * zoom };
       schedule();
       commitViewport();
-      maybeEnterDetail();
     };
 
     // ---- pointer pan + touch pinch ----
