@@ -457,7 +457,7 @@ export default function GridView() {
             {cellContent('|')}
           </div>
         </section>
-        <section className="grid-section">
+        <section className="grid-section dock-col">
           <h3>Drop to allocate</h3>
           <div className="grid-dock">
             {layers.map((l) => {
