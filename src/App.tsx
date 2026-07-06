@@ -165,6 +165,13 @@ function MainApp() {
         {loading ? (
           <div className="home">
             <p style={{ color: 'var(--muted)' }}>Loading map…</p>
+            <button
+              className="ghost"
+              style={{ color: 'var(--muted)' }}
+              onClick={() => useMapStore.getState().cancelLoad()}
+            >
+              Taking too long? Back to maps
+            </button>
           </div>
         ) : !mapId ? (
           <Home onImport={() => setImportOpen(true)} />

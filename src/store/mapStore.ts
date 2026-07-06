@@ -62,6 +62,8 @@ export interface MapState {
   // lifecycle
   loadMaps: () => Promise<void>;
   loadMap: (id: string) => Promise<void>;
+  /** abandon an in-flight load (e.g. a stalled one) and return to the map list */
+  cancelLoad: () => void;
   closeMap: () => void;
   renameMap: (name: string) => void;
   deleteMap: (id: string) => Promise<void>;
@@ -135,6 +137,31 @@ export interface MapState {
 const PAGE = 1000;
 const UNDO_CAP = 100;
 const COALESCE_MS = 1200;
+/** iOS Safari sometimes freezes in-flight fetches when the tab is backgrounded
+ *  and never resumes them (the server still answers 200). Without a ceiling the
+ *  "Loading map…" spinner would hang forever, so bound every load. */
+const LOAD_TIMEOUT_MS = 25000;
+/** bumped on every loadMap() so a slow earlier load can't clobber a later one */
+let loadSeq = 0;
+
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(
+      () => reject(new Error('Loading timed out — the connection stalled or the tab was backgrounded.')),
+      ms,
+    );
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(t);
+        reject(e);
+      },
+    );
+  });
+}
 
 async function fetchAll<T>(table: string, mapId: string, pk = 'id'): Promise<T[]> {
   const out: T[] = [];
@@ -748,9 +775,10 @@ export const useMapStore = create<MapState>()((set, get) => {
     },
 
     loadMap: async (id: string) => {
+      const seq = ++loadSeq;
       set({ loading: true, loadError: null });
       try {
-        const [mapRes, nodeRows, edgeRows, defRows, layoutRows, imageRows] = await Promise.all([
+        const [mapRes, nodeRows, edgeRows, defRows, layoutRows, imageRows] = await withTimeout(Promise.all([
           supabase.from('maps').select('*').eq('id', id).single(),
           fetchAll<NodeRow>('nodes', id),
           fetchAll<EdgeRow>('edges', id),
@@ -767,7 +795,8 @@ export const useMapStore = create<MapState>()((set, get) => {
             width: number | null;
             height: number | null;
           }>('images', id),
-        ]);
+        ]), LOAD_TIMEOUT_MS);
+        if (seq !== loadSeq) return; // a newer load started; drop this stale result
         if (mapRes.error) throw new Error(mapRes.error.message);
 
         const nodes: Record<string, NodeData> = {};
@@ -890,8 +919,14 @@ export const useMapStore = create<MapState>()((set, get) => {
           editingLabelId: null,
         });
       } catch (e) {
+        if (seq !== loadSeq) return; // superseded by a newer load; leave its state alone
         set({ loading: false, loadError: e instanceof Error ? e.message : String(e) });
       }
+    },
+
+    cancelLoad: () => {
+      loadSeq++; // discard whatever the in-flight load eventually resolves to
+      set({ loading: false });
     },
 
     closeMap: () => {
